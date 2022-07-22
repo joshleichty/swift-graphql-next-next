@@ -7,6 +7,8 @@ import GraphQLAST
  */
 
 public struct GraphQLCodegen {
+    
+    /// Map of supported scalars.
     private let scalars: ScalarMap
 
     // MARK: - Initializer
@@ -17,50 +19,106 @@ public struct GraphQLCodegen {
             uniquingKeysWith: { _, override in override }
         )
     }
+    
+    public struct Output {
+        /// Generated API.
+        public var code: String
+        
+        /// List of scalars that weren't considered because they weren't listed as supported ones.
+        public var ignoredScalars: [String]
+    }
 
     // MARK: - Methods
 
     /// Generates a target SwiftGraphQL Selection file.
     ///
     /// - parameter from: GraphQL server endpoint.
-    public func generate(from endpoint: URL, withHeaders headers: [String: String] = [:]) throws -> String {
+    public func generate(from endpoint: URL, withHeaders headers: [String: String] = [:]) throws -> Output {
         let schema = try Schema(from: endpoint, withHeaders: headers)
         let code = try generate(schema: schema)
-        return code
+        
+        let schemaScalars = try schema.usedScalars()
+        let ignoredScalars: [String] = schemaScalars.filter { !scalars.supported.contains($0) }
+        
+        return Output(code: code, ignoredScalars: ignoredScalars)
     }
 
     /// Generates the code that can be used to define selections.
     func generate(schema: Schema) throws -> String {
+        let context = Context(schema: schema, scalars: self.scalars)
+        
+        let subscription = schema.operations.first { $0.isSubscription }?.type.name
+        
+        // Code Parts
+        let operations = schema.operations.map { $0.declaration() }
+        let objectDefinitions = try schema.objects.map { object in
+            try object.declaration(
+                objects: schema.objects,
+                context: context,
+                alias: object.name != subscription
+            )
+        }
+        
+        let staticFieldSelection = try schema.objects.map { object in
+            try object.statics(
+                context: context,
+                alias: object.name == subscription
+            )
+        }
+        
+        let interfaceDefinitions = try schema.interfaces.map {
+            try $0.declaration(objects: schema.objects, context: context)
+        }
+        
+        let unionDefinitions = try schema.unions.map {
+            try $0.declaration(objects: schema.objects, context: context)
+        }
+        
+        let enumDefinitions = schema.enums.map { $0.declaration }
+        
+        let inputObjectDefinitions = try schema.inputObjects.map {
+            try $0.declaration(context: context)
+        }
+        
+        // API
         let code = """
         // This file was auto-generated using maticzav/swift-graphql. DO NOT EDIT MANUALLY!
+        import Foundation
+        import GraphQL
         import SwiftGraphQL
 
         // MARK: - Operations
         enum Operations {}
-        \(schema.operations.map { $0.declaration() }.lines)
+        \(operations.lines)
 
         // MARK: - Objects
         enum Objects {}
-        \(try schema.objects.map { try $0.declaration(objects: schema.objects, scalars: scalars) }.lines)
+        \(objectDefinitions.lines)
+        \(staticFieldSelection.lines)
 
         // MARK: - Interfaces
         enum Interfaces {}
-        \(try schema.interfaces.map { try $0.declaration(objects: schema.objects, scalars: scalars) }.lines)
+        \(interfaceDefinitions.lines)
 
         // MARK: - Unions
         enum Unions {}
-        \(try schema.unions.map { try $0.declaration(objects: schema.objects, scalars: scalars) }.lines)
+        \(unionDefinitions.lines)
 
         // MARK: - Enums
         enum Enums {}
-        \(schema.enums.map { $0.declaration }.lines)
+        \(enumDefinitions.lines)
 
         // MARK: - Input Objects
+        
+        /// Utility pointer to InputObjects.
+        typealias Inputs = InputObjects
+        
         enum InputObjects {}
-        \(try schema.inputObjects.map { try $0.declaration(scalars: scalars) }.lines)
+        \(inputObjectDefinitions.lines)
         """
 
-        let source = try code.format()
-        return source
+//        return code
+        let formatted = try code.format()
+        return formatted
     }
 }

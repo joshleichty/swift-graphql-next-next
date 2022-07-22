@@ -1,5 +1,6 @@
 import Foundation
 import GraphQLAST
+import SwiftGraphQL
 
 /*
  This file contains code used to generate unions.
@@ -7,26 +8,30 @@ import GraphQLAST
  */
 
 extension UnionType: Structure {
-    var fields: [Field] { [] }
+    var fields: [Field] {
+        // Unions come with no predefined fields.
+        []
+    }
 }
 
 extension UnionType {
+    
     /// Returns a declaration of the union type that we add to the generated file.
-    func declaration(objects: [ObjectType], scalars: ScalarMap) throws -> String {
+    /// - parameter objects:
+    func declaration(objects: [ObjectType], context: Context) throws -> String {
         let name = self.name.pascalCase
-
+        let definition = try self.definition(name: name, objects: objects, context: context)
+        
+        let selections = possibleTypes.selection(name: "Unions.\(name)", objects: objects)
+        
         return """
         extension Unions {
-        \(try self.struct(name: name, objects: objects, scalars: scalars))
+        \(definition)
         }
 
-        extension Unions.\(name): Decodable {
-        \(try allFields(objects: objects).decoder(scalars: scalars, includeTypenameDecoder: true))
-        }
+        \(selections)
 
-        \(possibleTypes.selection(name: "Unions.\(name)", objects: objects))
-
-        extension Selection where TypeLock == Never, Type == Never {
+        extension Selection where T == Never, TypeLock == Never {
             typealias \(name)<T> = Selection<T, Unions.\(name)>
         }
         """
